@@ -1,0 +1,100 @@
+# Builds the standalone executable on every platform and attaches the results
+# to a GitHub Release. PyInstaller cannot cross-compile, so each binary has to
+# be produced on its own OS — which is exactly what the free runners are for.
+name: build portable binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # Integrity check only: regenerating from ref/zc3xx.c must reproduce the
+  # committed tables byte for byte. Deliberately not a dependency of `build`,
+  # so a diff here reports without costing anyone their binaries.
+  verify-tables:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Regenerate the register tables
+        run: python tools/gen_tables.py
+      - name: Fail if the generated tables are stale
+        run: git diff --exit-code -- zc3xx/_tables.py webusb/zc3xx-tables.js
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04      # older glibc = runs on more distros
+            asset: zc3xx-camera-linux-x86_64
+          - os: macos-14          # Apple silicon
+            asset: zc3xx-camera-macos-arm64
+          - os: macos-13          # Intel
+            asset: zc3xx-camera-macos-x86_64
+          - os: windows-latest
+            asset: zc3xx-camera-windows-x86_64.exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # the pip wheel already carries libusb on Windows; elsewhere we need the
+      # system library so the build script can bundle it
+      - name: Install libusb (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0
+
+      - name: Install libusb (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libusb
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip pyinstaller libusb1
+
+      - name: Build
+        run: python tools/build_portable.py
+
+      # the runners have no camera, so this only proves the binary starts,
+      # finds its bundled libusb and can read its own tables
+      - name: Smoke test
+        shell: bash
+        run: |
+          binary=$(ls dist/zc3xx-camera*)
+          "$binary" tables | head -3
+          "$binary" probe || true
+
+      - name: Rename for release
+        shell: bash
+        run: |
+          mkdir -p upload
+          cp "$(ls dist/zc3xx-camera*)" "upload/${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: upload/${{ matrix.asset }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

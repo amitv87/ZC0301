@@ -1,0 +1,14 @@
+# Z-Star / Vimicro ZC0301(P) cameras — let a logged-in user open the device
+# without root. Install with:
+#
+#   sudo cp packaging/99-zc3xx.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# TAG+="uaccess" grants access to the user at the active seat, which is tidier
+# than MODE="0666" (that would open the device up to every local account).
+SUBSYSTEM=="usb", ATTR{idVendor}=="0ac8", ATTR{idProduct}=="0301", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0ac8", ATTR{idProduct}=="0302", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0ac8", ATTR{idProduct}=="301b", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0ac8", ATTR{idProduct}=="303b", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0ac8", ATTR{idProduct}=="305b", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0ac8", ATTR{idProduct}=="307b", TAG+="uaccess"

@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZC0301 Camera</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7; --panel: #ffffff; --fg: #17171b; --muted: #6a6a76;
+    --line: #dededf; --accent: #2f6df6; --bad: #c2352b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121215; --panel: #1b1b20; --fg: #f0f0f3; --muted: #9b9ba8;
+      --line: #2e2e36; --accent: #6f9bff; --bad: #ff7a70;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; display: flex;
+         flex-direction: column; gap: 16px; }
+  header h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; padding: 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button {
+    font: inherit; font-weight: 500; padding: 7px 14px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent);
+                   color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  label { font-size: 13px; color: var(--muted); display: inline-flex;
+          align-items: center; gap: 6px; }
+  select, input[type=range] { font: inherit; accent-color: var(--accent); }
+  select { padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--fg); }
+  .stage { display: flex; justify-content: center; background: #000;
+           border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  canvas { display: block; width: 100%; max-width: 640px; height: auto;
+           image-rendering: pixelated; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px;
+       margin: 0; font-size: 13px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
+  pre#log {
+    margin: 0; max-height: 170px; overflow: auto; font-size: 12px;
+    line-height: 1.5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted); white-space: pre-wrap;
+  }
+  .error { color: var(--bad); }
+  .hint { font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ZC0301 PC Camera</h1>
+    <p>Vimicro / Z-Star vendor-specific webcam driven straight from the browser
+       over WebUSB &mdash; control transfers for the bridge and sensor,
+       isochronous transfers for the video.</p>
+  </header>
+
+  <div class="panel">
+    <div class="row">
+      <button id="connect" class="primary">Connect camera</button>
+      <button id="start" disabled>Start</button>
+      <button id="stop" disabled>Stop</button>
+      <span id="status" class="hint">Not connected.</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <label>Resolution <select id="mode" disabled></select></label>
+      <label>Quality
+        <select id="quality" disabled>
+          <option value="50">50</option>
+          <option value="75" selected>75</option>
+          <option value="87">87</option>
+        </select>
+      </label>
+      <label>Flicker filter
+        <select id="freq" disabled>
+          <option value="0" selected>off</option>
+          <option value="1">50 Hz</option>
+          <option value="2">60 Hz</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="autogain" checked disabled> Auto exposure</label>
+      <label id="exposureWrap" hidden>Exposure
+        <input type="range" id="exposure" min="781" max="18750" value="2343">
+      </label>
+    </div>
+  </div>
+
+  <div class="stage"><canvas id="view" width="320" height="240"></canvas></div>
+
+  <div class="panel">
+    <dl>
+      <dt>Sensor</dt><dd id="sensor">&mdash;</dd>
+      <dt>Stream</dt><dd id="streamInfo">&mdash;</dd>
+      <dt>Frames</dt><dd id="frames">0</dd>
+      <dt>Rate</dt><dd id="fps">0.0 fps</dd>
+    </dl>
+  </div>
+
+  <div class="panel"><pre id="log">Waiting for a device.</pre></div>
+</main>
+
+<script type="module">
+import { openCamera, closeCamera, requestCamera, getPairedCamera }
+  from './zc3xx.js';
+
+const $ = (id) => document.getElementById(id);
+const canvas = $('view');
+const context = canvas.getContext('2d', { alpha: false });
+
+let camera = null;
+let frameCount = 0;
+let lastCount = 0;
+let lastTime = performance.now();
+let decoding = false;
+
+function log(message, isError = false) {
+  const line = document.createElement('span');
+  line.textContent = `${message}\n`;
+  if (isError) line.className = 'error';
+  if ($('log').textContent === 'Waiting for a device.') $('log').textContent = '';
+  $('log').append(line);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function setStatus(text) { $('status').textContent = text; }
+
+if (!navigator.usb) {
+  setStatus('This browser has no WebUSB. Use Chrome or Edge.');
+  $('connect').disabled = true;
+}
+
+/**
+ * Decode one JPEG frame onto the canvas.  Frames that arrive while a decode is
+ * still running are dropped: showing the newest frame beats queueing stale ones.
+ */
+async function draw(frame) {
+  frameCount++;
+  if (decoding) return;
+  decoding = true;
+  try {
+    const bitmap = await createImageBitmap(
+      new Blob([frame], { type: 'image/jpeg' }));
+    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+    }
+    context.drawImage(bitmap, 0, 0);
+    bitmap.close();
+  } catch (error) {
+    // a torn frame; the next one will be fine
+  } finally {
+    decoding = false;
+  }
+}
+
+setInterval(() => {
+  const now = performance.now();
+  const elapsed = (now - lastTime) / 1000;
+  if (elapsed >= 1) {
+    $('fps').textContent = ((frameCount - lastCount) / elapsed).toFixed(1) + ' fps';
+    lastCount = frameCount;
+    lastTime = now;
+  }
+  $('frames').textContent = String(frameCount);
+}, 500);
+
+async function attach(device) {
+  setStatus('Opening and probing the sensor, this takes a few seconds…');
+  $('connect').disabled = true;
+  try {
+    camera = await openCamera(device, { onLog: log });
+  } catch (error) {
+    setStatus('Failed to open the camera.');
+    log(String(error), true);
+    $('connect').disabled = false;
+    return;
+  }
+  $('sensor').textContent = camera.sensor
+    + (camera.chipRevision ? ` (rev 0x${camera.chipRevision.toString(16)})` : '');
+  $('mode').innerHTML = '';
+  camera.modes.forEach(([width, height], index) => {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = `${width} × ${height}`;
+    $('mode').append(option);
+  });
+  for (const id of ['mode', 'quality', 'freq', 'autogain']) $(id).disabled = false;
+  $('exposureWrap').hidden = camera.exposure === null;
+  if (camera.exposure !== null) $('exposure').value = String(camera.exposure);
+  $('start').disabled = false;
+  setStatus(`Connected: ${camera.sensor}.`);
+
+  if (/Windows/i.test((navigator.userAgentData || {}).platform ||
+                      navigator.userAgent || '')) {
+    log('Heads up: Chromium does not implement isochronous transfers on '
+      + 'Windows, so Start will fail here even though the sensor probed '
+      + 'fine over control transfers. Use "python zc3xx_capture.py stream" '
+      + 'instead — the libusb driver supports isochronous on Windows.', true);
+  }
+}
+
+$('connect').addEventListener('click', async () => {
+  try {
+    await attach(await requestCamera());
+  } catch (error) {
+    $('connect').disabled = false;
+    log(String(error), true);
+    setStatus('No device chosen.');
+  }
+});
+
+$('start').addEventListener('click', async () => {
+  if (!camera) return;
+  $('start').disabled = true;
+  camera.autogain = $('autogain').checked ? 1 : 0;
+  camera.lightFrequency = Number($('freq').value);
+  camera.onError = (error) => {
+    log(error.message, true);
+    setStatus('Streaming stopped — see the log below.');
+    $('start').disabled = false;
+    $('stop').disabled = true;
+  };
+  try {
+    const { width, height } = await camera.start({
+      mode: Number($('mode').value),
+      quality: Number($('quality').value),
+      onFrame: draw,
+    });
+    frameCount = lastCount = 0;
+    lastTime = performance.now();
+    $('streamInfo').textContent =
+      `${width} × ${height}, alt ${camera.alt}, ${camera.packetSize} B/packet, quality ${camera.quality}`;
+    $('stop').disabled = false;
+    setStatus('Streaming.');
+  } catch (error) {
+    log(String(error), true);
+    setStatus('Could not start the stream.');
+    $('start').disabled = false;
+  }
+});
+
+$('stop').addEventListener('click', async () => {
+  if (!camera) return;
+  $('stop').disabled = true;
+  await camera.stop();
+  $('start').disabled = false;
+  setStatus('Stopped.');
+});
+
+$('exposure').addEventListener('change', async () => {
+  if (camera && camera.streaming) {
+    await camera.setExposure(Number($('exposure').value));
+  }
+});
+
+$('autogain').addEventListener('change', async () => {
+  if (camera && camera.streaming) {
+    await camera.setAutogain($('autogain').checked ? 1 : 0);
+  }
+});
+
+$('quality').addEventListener('change', async () => {
+  if (camera && camera.streaming) {
+    await camera.setQuality(Number($('quality').value));
+  }
+});
+
+window.addEventListener('beforeunload', () => { if (camera) closeCamera(camera); });
+
+// a device the user has already granted access to can be picked up silently
+getPairedCamera().then((device) => {
+  if (device) {
+    setStatus('Previously paired device found. Click “Connect camera”.');
+    $('connect').textContent = 'Open paired camera';
+    $('connect').onclick = () => attach(device);
+  }
+});
+</script>
+</body>
+</html>

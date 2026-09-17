@@ -124,6 +124,9 @@ fall back to, so Chromium is the only option — and only on some platforms:
 | Linux, ChromeOS | yes | yes |
 | Windows | yes | **no** — see below |
 
+The libusb driver has no such gap: it is verified streaming on **macOS** and on
+**Windows** (WinUSB, from the frozen one-file build).
+
 ### Windows cannot stream over WebUSB
 
 Chromium's Windows USB backend never implemented isochronous transfers. The
@@ -143,8 +146,9 @@ like a configuration problem. It is not: no driver swap, alternate setting or
 transfer size changes it. The page detects Windows and says so before you press
 Start.
 
-Use the libusb driver there instead; `libusb` has supported isochronous on
-WinUSB since 1.0.23.
+Use the libusb driver there instead. `libusb` has supported isochronous on
+WinUSB since 1.0.23, and the standalone Windows build is verified working
+against real hardware.
 
 ### Other notes
 
@@ -160,7 +164,8 @@ WinUSB since 1.0.23.
 ## Distributing it
 
 `tools/build_portable.py` freezes the tool into **one executable with no
-runtime dependencies** — no Python, no pip, no libusb on the target machine:
+runtime dependencies** — no Python, no pip, no libusb on the target machine.
+The Windows build produced this way is verified streaming from a real camera:
 
 ```sh
 python3 -m pip install pyinstaller libusb1
